@@ -1,0 +1,23 @@
+# .NET build output
+bin/
+obj/
+.vs/
+artifacts/
+logs/
+
+# Local application data and exports
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.jsonl
+auth/
+secrets/
+
+# User and IDE files
+*.user
+*.suo
+TestResults/
+coverage/
+*.DotSettings.user
