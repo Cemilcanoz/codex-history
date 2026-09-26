@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'artifacts\release'),
-    [string]$Version = '0.1.0'
+    [string]$Version = '0.1.1'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -33,13 +33,15 @@ try {
     if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
         throw "Published executable missing: $executable"
     }
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'LICENSE') -Destination (Join-Path $stage 'LICENSE.txt')
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'README.md') -Destination (Join-Path $stage 'README.md')
 
     @'
 CODEX HISTORY — WINDOWS PORTABLE
 
 1. ZIP dosyasını bir klasöre çıkarın.
 2. CodexHistory.App.exe dosyasını çalıştırın.
-3. Kaynak klasörünü seçin ve TARA düğmesine basın. İsterseniz önce DEMO ile sentetik veriyi deneyin.
+3. sessions/ ve archived_sessions/ klasörlerini içeren Codex ana klasörünü seçin ve TARA düğmesine basın. İsterseniz önce DEMO ile sentetik veriyi deneyin.
 
 Windows x64 içindir. .NET kurulumu gerektirmez. Uygulama yalnız seçtiğiniz Codex oturum
 klasörünü okur; auth.json ve kimlik bilgilerini işlemez. İndeks veritabanı yerel

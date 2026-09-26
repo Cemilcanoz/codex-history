@@ -34,6 +34,7 @@ public sealed class SqliteHistoryCatalog : IHistoryCatalog
         cancellationToken.ThrowIfCancellationRequested();
         var source = Path.GetFullPath(sourceDirectory ?? throw new ArgumentNullException(nameof(sourceDirectory)));
         if (!Directory.Exists(source)) throw new DirectoryNotFoundException(source);
+        if (HasReparsePoint(source)) throw new InvalidOperationException("Source directory must not contain symbolic links or junctions in its path.");
         if (IsWithin(databasePath, source)) throw new InvalidOperationException("İndeks veritabanı kaynak günlük klasörünün dışında olmalıdır.");
 
         var files = EnumerateHistoryFiles(source).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray();
@@ -193,6 +194,7 @@ public sealed class SqliteHistoryCatalog : IHistoryCatalog
 
     private static async Task<byte[]> ReadFileAsync(string path, CancellationToken token)
     {
+        if (HasReparsePoint(path)) throw new InvalidOperationException("History file must not contain symbolic links or junctions in its path.");
         await using var input = new FileStream(
             path,
             FileMode.Open,
@@ -208,9 +210,8 @@ public sealed class SqliteHistoryCatalog : IHistoryCatalog
     private static ParsedFile ParseFile(byte[] bytes, string path, string relativePath, string fingerprint, CancellationToken token)
     {
         var text = Encoding.UTF8.GetString(bytes);
-        var terminated = text.EndsWith('\n');
         var lines = text.Split('\n');
-        var count = terminated ? lines.Length - 1 : lines.Length - 1;
+        var count = lines.Length - 1; // A live writer may not have finished the final line yet.
         var file = new ParsedFile(relativePath, path, fingerprint);
         string? currentModel = null;
         for (var i = 0; i < count; i++)
@@ -275,7 +276,7 @@ public sealed class SqliteHistoryCatalog : IHistoryCatalog
 
     private static AggregatedSession Aggregate(IEnumerable<ParsedFile> input, HashSet<string> seenResponses)
     {
-        var files = input.OrderBy(x => x.RelativePath.StartsWith("archived_sessions/", StringComparison.OrdinalIgnoreCase) ? 1 : 0).ThenBy(x => x.RelativePath).ToArray();
+        var files = input.DistinctBy(x => x.Fingerprint).OrderBy(x => x.RelativePath.StartsWith("archived_sessions/", StringComparison.OrdinalIgnoreCase) ? 1 : 0).ThenBy(x => x.RelativePath).ToArray();
         var result = new AggregatedSession(files[0].SessionId!, files[0].Path)
         {
             Title = files.Select(x => x.Title).LastOrDefault(x => x is not null), Project = files.Select(x => x.Project).LastOrDefault(x => x is not null), Model = files.Select(x => x.Model).LastOrDefault(x => x is not null),
@@ -289,16 +290,27 @@ public sealed class SqliteHistoryCatalog : IHistoryCatalog
                 if (modern.ResponseId is not null && !seenResponses.Add(modern.ResponseId)) continue;
                 acceptedModern.Add(modern); result.Add(modern.Usage); result.CostItems.Add((modern.Timestamp, modern.Model, modern.Usage));
             }
-            var legacy = file.LegacyTotals.OrderBy(x => x.Timestamp).LastOrDefault();
-            if (legacy is not null)
-            {
-                var rawModern = file.Modern.Aggregate(UsageValue.Zero, (sum, x) => sum + x.Usage);
-                var delta = UsageValue.PositiveDifference(legacy.Usage, rawModern);
-                if (!delta.IsZero) { result.Add(delta); result.CostItems.Add((legacy.Timestamp, legacy.Model, delta)); result.UsageUncertain = file.Modern.Count > 0; }
-                else if (file.Modern.Count == 0) { result.Add(legacy.Usage); result.CostItems.Add((legacy.Timestamp, legacy.Model, legacy.Usage)); }
-            }
-            result.Events.AddRange(file.Events.Where(e => e.ResponseId is null || acceptedModern.Any(a => a.ResponseId == e.ResponseId)));
+            var acceptedIds = acceptedModern.Where(x => x.ResponseId is not null)
+                .Select(x => x.ResponseId!).ToHashSet(StringComparer.Ordinal);
+            result.Events.AddRange(file.Events.Where(e => e.ResponseId is null || acceptedIds.Remove(e.ResponseId)));
             result.Quotas.AddRange(file.Quotas);
+        }
+        // Legacy snapshots are cumulative for the session, including copies in archives.
+        // Reconcile once against unique raw responses, including globally deduplicated copies.
+        var legacy = files.SelectMany(x => x.LegacyTotals).OrderBy(x => x.Timestamp).LastOrDefault();
+        if (legacy is not null)
+        {
+            var localResponses = new HashSet<string>(StringComparer.Ordinal);
+            var rawModern = files.SelectMany(x => x.Modern)
+                .Where(x => x.ResponseId is null || localResponses.Add(x.ResponseId))
+                .Aggregate(UsageValue.Zero, (sum, x) => sum + x.Usage);
+            var delta = UsageValue.PositiveDifference(legacy.Usage, rawModern);
+            if (!delta.IsZero)
+            {
+                result.Add(delta);
+                result.CostItems.Add((legacy.Timestamp, legacy.Model, delta));
+                result.UsageUncertain = files.Any(x => x.Modern.Count > 0);
+            }
         }
         return result;
     }
@@ -378,8 +390,30 @@ public sealed class SqliteHistoryCatalog : IHistoryCatalog
     }
 
     private static async Task ExecuteAsync(SqliteConnection c, SqliteTransaction? t, string sql, CancellationToken token){var cmd=c.CreateCommand();cmd.Transaction=t;cmd.CommandText=sql;await cmd.ExecuteNonQueryAsync(token);}
-    private SqliteConnection Open()=>new($"Data Source={databasePath};Mode=ReadWriteCreate");
-    private static IEnumerable<string> EnumerateHistoryFiles(string source){foreach(var name in new[]{"sessions","archived_sessions"}){var dir=Path.Combine(source,name);if(Directory.Exists(dir))foreach(var f in Directory.EnumerateFiles(dir,"*.jsonl",SearchOption.AllDirectories))yield return f;}}
+    private SqliteConnection Open() => new(new SqliteConnectionStringBuilder { DataSource = databasePath, Mode = SqliteOpenMode.ReadWriteCreate }.ToString());
+    private static IEnumerable<string> EnumerateHistoryFiles(string source)
+    {
+        var options = new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            AttributesToSkip = FileAttributes.ReparsePoint,
+            IgnoreInaccessible = false
+        };
+        foreach (var name in new[] { "sessions", "archived_sessions" })
+        {
+            var directory = Path.Combine(source, name);
+            if (!Directory.Exists(directory) || HasReparsePoint(directory)) continue;
+            foreach (var file in Directory.EnumerateFiles(directory, "*.jsonl", options))
+                if (!HasReparsePoint(file)) yield return file;
+        }
+    }
+
+    private static bool HasReparsePoint(string path)
+    {
+        for (var current = Path.GetFullPath(path); current is not null; current = Path.GetDirectoryName(current))
+            if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) return true;
+        return false;
+    }
     private static async Task<Dictionary<string,string>> ReadFingerprintsAsync(SqliteConnection c,CancellationToken token){var d=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);var cmd=c.CreateCommand();cmd.CommandText="SELECT path,fingerprint FROM source_files";await using var r=await cmd.ExecuteReaderAsync(token);while(await r.ReadAsync(token))d[r.GetString(0)]=r.GetString(1);return d;}
     private static async Task InsertFingerprintAsync(SqliteConnection c,SqliteTransaction t,ParsedFile f,CancellationToken token){var cmd=c.CreateCommand();cmd.Transaction=t;cmd.CommandText="INSERT INTO source_files VALUES($p,$f)";Add(cmd,"$p",f.RelativePath);Add(cmd,"$f",f.Fingerprint);await cmd.ExecuteNonQueryAsync(token);}
     private static async Task<string?> ReadSourceAsync(SqliteConnection c,CancellationToken token){var cmd=c.CreateCommand();cmd.CommandText="SELECT value FROM catalog_metadata WHERE key='source_root'";return await cmd.ExecuteScalarAsync(token) as string;}
@@ -459,7 +493,7 @@ public sealed class SqliteHistoryCatalog : IHistoryCatalog
     private static string? String(JsonElement e,string name)=>Object(e,name).ValueKind==JsonValueKind.String?Object(e,name).GetString():null;
     private static long Long(JsonElement e,string name){var v=Object(e,name);return v.ValueKind==JsonValueKind.Number&&v.TryGetInt64(out var n)?Math.Max(0,n):0;}
     private static double? Double(JsonElement e,string name){var v=Object(e,name);return v.ValueKind==JsonValueKind.Number&&v.TryGetDouble(out var n)?n:null;}
-    private static DateTimeOffset? Date(JsonElement e,string name){var s=String(e,name);if(s is not null&&DateTimeOffset.TryParse(s,CultureInfo.InvariantCulture,DateTimeStyles.AssumeUniversal,out var d))return d;var v=Object(e,name);if(v.ValueKind==JsonValueKind.Number&&v.TryGetInt64(out var unix))return DateTimeOffset.FromUnixTimeSeconds(unix);return null;}
+    private static DateTimeOffset? Date(JsonElement e,string name){var s=String(e,name);if(s is not null&&DateTimeOffset.TryParse(s,CultureInfo.InvariantCulture,DateTimeStyles.AssumeUniversal,out var d))return d;var v=Object(e,name);if(v.ValueKind==JsonValueKind.Number&&v.TryGetInt64(out var unix)&&unix >= -62135596800L&&unix <= 253402300799L)return DateTimeOffset.FromUnixTimeSeconds(unix);return null;}
     private static bool Decimal(string s,out decimal d)=>decimal.TryParse(s,NumberStyles.Number,CultureInfo.InvariantCulture,out d);
     private static string FormatDate(DateTimeOffset d)=>d.ToUniversalTime().ToString("O",CultureInfo.InvariantCulture);
     private static DateTimeOffset ParseDate(string s)=>DateTimeOffset.Parse(s,CultureInfo.InvariantCulture,DateTimeStyles.RoundtripKind);

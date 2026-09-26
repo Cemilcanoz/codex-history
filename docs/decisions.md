@@ -41,3 +41,7 @@ Installer, MSIX ve self-contained dağıtım seçenekleri ilk çalışan ürün 
 Uygulama açtığı her SQLite indeksine `2026-09-22-current-price-fallback-v2` sürümlü varsayılan fiyatları `INSERT OR IGNORE` ile ekler. Varsayılan satırların teknik başlangıç tarihi `1970-01-01` seçildi; böylece desteklenen eski oturumlar da 22 Eylül 2026'da doğrulanan güncel fiyatlarla bugünkü yaklaşık karşılık kazanır. Bu bir tarihsel fiyat iddiası değildir. Önceki sürümün yalnız `2026-09-22` satırını taşıyan mevcut DB'lerine fallback satırı idempotent olarak eklenir. Kullanıcının CSV ile yazdığı değer sonraki açılışta ezilmez. Fiyat seçimi, kullanım zamanından ileri olmayan en yeni `effective_date` satırını kullandığı için tarihli kullanıcı satırları fallback'in önüne geçer.
 
 Katalog değerleri 22 Eylül 2026 tarihinde doğrulanan OpenAI standart API liste fiyatlarıdır. Bunlar tarihsel fiyat veya Codex abonelik faturası iddiası taşımaz; yalnız güncel API liste fiyatıyla yaklaşık karşılık üretir. Sadece model adı eşleşmeyen kullanımlar kısmi ya da bilinmeyen bırakılır. Çevrimiçi fiyat çekme, ilk ürün diliminde ağ bağımlılığı ve tarihsel belirsizlik yaratmamak için eklenmedi.
+
+## Public preview distribution (2026-09-27)
+
+Self-contained Windows x64 portable ZIP distribution is now selected. Source builds still use .NET 10. The portable script packages the application and creates a SHA-256 checksum. The initial distribution is unsigned; installer, signing and automatic updates remain future work. This supersedes the earlier decision to defer all packaging.

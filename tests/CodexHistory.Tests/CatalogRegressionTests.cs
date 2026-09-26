@@ -391,6 +391,143 @@ public sealed class CatalogRegressionTests
         Assert.DoesNotContain(secret, System.Text.Encoding.UTF8.GetString(await File.ReadAllBytesAsync(w.Database)));
     }
 
+    [Fact]
+    public async Task Legacy_cumulative_totals_are_reconciled_once_across_session_files()
+    {
+        using var w = new TestWorkspace();
+        w.WriteLog("sessions/live.jsonl", Meta, Model, Legacy(120, 20, 30, 5, 20, 0, 5, 1));
+        w.WriteLog("archived_sessions/earlier.jsonl", Meta, Model,
+            Legacy(100, 20, 25, 4, 100, 20, 25, 4).Replace("00:00:03Z", "00:00:02Z"));
+        var catalog = w.Catalog();
+
+        await catalog.RefreshAsync(w.Source);
+        var session = Assert.Single(await catalog.ListSessionsAsync());
+
+        Assert.Equal((120L, 20L, 30L, 5L),
+            (session.InputTokens, session.CachedInputTokens, session.OutputTokens, session.ReasoningOutputTokens));
+    }
+
+    [Fact]
+    public async Task Exact_archive_copy_does_not_duplicate_tool_calls_or_legacy_usage()
+    {
+        using var w = new TestWorkspace();
+        string[] lines = [Meta, Model, Legacy(100, 20, 25, 4, 100, 20, 25, 4),
+            """{"timestamp":"2026-01-01T00:00:04Z","type":"response_item","payload":{"type":"function_call","name":"shell"}}"""];
+        w.WriteLog("sessions/live.jsonl", lines);
+        w.WriteLog("archived_sessions/copy.jsonl", lines);
+        var catalog = w.Catalog();
+
+        await catalog.RefreshAsync(w.Source);
+        var session = Assert.Single(await catalog.ListSessionsAsync());
+
+        Assert.Equal(100, session.InputTokens);
+        Assert.Equal(1, session.ToolCallCount);
+        Assert.Single((await catalog.GetSessionAsync("s1"))!.Timeline, x => x.Kind == "tool");
+    }
+
+    [Fact]
+    public async Task Out_of_range_unix_reset_is_ignored_without_losing_valid_usage()
+    {
+        using var w = new TestWorkspace();
+        w.WriteLog("sessions/s1.jsonl", Meta, Model, Modern("r1", 7, 2, 3, 1),
+            """{"timestamp":"2026-01-01T00:00:03Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"used_percent":40,"resets_at":9223372036854775807}}}""");
+        var catalog = w.Catalog();
+
+        await catalog.RefreshAsync(w.Source);
+        var detail = (await catalog.GetSessionAsync("s1"))!;
+
+        Assert.Equal(7, detail.Summary.InputTokens);
+        Assert.Null(Assert.Single(detail.QuotaSnapshots).ResetsAt);
+    }
+
+    [Fact]
+    public async Task Database_filename_with_connection_string_characters_is_literal()
+    {
+        using var w = new TestWorkspace();
+        w.WriteLog("sessions/s1.jsonl", Meta, Model, Modern("r1", 7, 2, 3, 1));
+        var path = Path.Combine(w.Root, "catalog", "history;Mode=ReadOnly.db");
+        var catalog = new SqliteHistoryCatalog(path);
+
+        await catalog.RefreshAsync(w.Source);
+
+        Assert.True(File.Exists(path));
+        Assert.Equal(7, Assert.Single(await catalog.ListSessionsAsync()).InputTokens);
+    }
+
+    [Fact]
+    public async Task Repeated_response_id_does_not_duplicate_usage_timeline()
+    {
+        using var w = new TestWorkspace();
+        w.WriteLog("sessions/s1.jsonl", Meta, Model, Modern("r1", 7, 2, 3, 1), Modern("r1", 7, 2, 3, 1));
+        var catalog = w.Catalog();
+
+        await catalog.RefreshAsync(w.Source);
+        var detail = (await catalog.GetSessionAsync("s1"))!;
+
+        Assert.Equal(7, detail.Summary.InputTokens);
+        Assert.Single(detail.Timeline, x => x.Kind == "usage");
+    }
+
+    [Fact]
+    public async Task Linked_source_or_ancestor_is_rejected_before_database_creation()
+    {
+        using var w = new TestWorkspace();
+        w.WriteLog("sessions/s1.jsonl", Meta, Model);
+        var link = Path.Combine(w.Root, "linked-source");
+        CreateTestLink(link, w.Source, directory: true);
+        try
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() => w.Catalog().RefreshAsync(link));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => w.Catalog().RefreshAsync(Path.Combine(link, "sessions")));
+            Assert.False(File.Exists(w.Database));
+        }
+        finally { Directory.Delete(link); }
+    }
+
+    [Fact]
+    public async Task Linked_history_directories_and_auth_alias_files_are_not_scanned()
+    {
+        using var w = new TestWorkspace();
+        w.WriteLog("sessions/real.jsonl", Meta, Model, Modern("r1", 7, 0, 1, 0));
+        var external = w.WriteText("outside/auth.json", Meta.Replace("s1", "secret") + Environment.NewLine + Modern("secret-response", 900, 0, 1, 0) + Environment.NewLine);
+        w.WriteText("outside/secret.jsonl", Meta.Replace("s1", "secret") + Environment.NewLine);
+        var fileLink = Path.Combine(w.Source, "sessions", "auth-alias.jsonl");
+        var directoryLink = Path.Combine(w.Source, "archived_sessions");
+        CreateTestLink(fileLink, external, directory: false);
+        try
+        {
+            CreateTestLink(directoryLink, Path.GetDirectoryName(external)!, directory: true);
+            try
+            {
+                var nestedLink = Path.Combine(w.Source, "sessions", "external");
+                CreateTestLink(nestedLink, Path.GetDirectoryName(external)!, directory: true);
+                try
+                {
+                var result = await w.Catalog().RefreshAsync(w.Source);
+                Assert.Equal(1, result.FilesScanned);
+                Assert.Equal("s1", Assert.Single(await w.Catalog().ListSessionsAsync()).Id);
+                }
+                finally { Directory.Delete(nestedLink); }
+            }
+            finally { Directory.Delete(directoryLink); }
+        }
+        finally { File.Delete(fileLink); }
+    }
+
+    private static void CreateTestLink(string link, string target, bool directory)
+    {
+        try
+        {
+            if (directory) Directory.CreateSymbolicLink(link, target);
+            else File.CreateSymbolicLink(link, target);
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or PlatformNotSupportedException
+            || exception is IOException && (exception.HResult & 0xFFFF) == 1314)
+        {
+            Assert.Skip("Symbolic link creation is unavailable on this machine: " + exception.Message);
+        }
+    }
+
     private static string Modern(string responseId, long input, long cached, long output, long reasoning) =>
         System.Text.Json.JsonSerializer.Serialize(new { timestamp = "2026-01-01T00:00:02Z", type = "token_usage_record", payload = new { response_id = responseId, usage = new { input_tokens = input, cached_input_tokens = cached, output_tokens = output, reasoning_output_tokens = reasoning } } });
 

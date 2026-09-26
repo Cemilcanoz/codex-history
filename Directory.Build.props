@@ -2,5 +2,9 @@
   <PropertyGroup>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <Version>0.1.1</Version>
+    <Authors>Cemil Can Öz</Authors>
+    <Description>Local Windows explorer for Codex sessions and usage metadata.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
   </PropertyGroup>
 </Project>

@@ -56,13 +56,13 @@ try
         return 2;
     }
 
+    var catalog = new SqliteHistoryCatalog(options.DatabasePath);
     var databaseDirectory = Path.GetDirectoryName(options.DatabasePath);
     if (!string.IsNullOrEmpty(databaseDirectory))
     {
         Directory.CreateDirectory(databaseDirectory);
     }
 
-    var catalog = new SqliteHistoryCatalog(options.DatabasePath);
     var refresh = await catalog.RefreshAsync(options.Source);
     var sessions = await catalog.ListSessionsAsync();
     Console.WriteLine(JsonSerializer.Serialize(new

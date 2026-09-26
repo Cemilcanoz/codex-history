@@ -91,10 +91,11 @@ public partial class MainWindow : System.Windows.Window
             CleanupTemporaryWorkspace();
             databasePath = primaryDatabasePath;
             catalog = null;
-            sessions = [];
-            visibleSessions.Clear();
         }
         sourcePath = Path.GetFullPath(dialog.FolderName);
+        sessions = [];
+        PopulateFilters();
+        ApplyFilters();
         UpdateSourceDisplay();
         StatusText.Text = "Yeni kaynak seçildi · Taramayı başlatın.";
     }
@@ -477,9 +478,9 @@ public partial class MainWindow : System.Windows.Window
             return;
         }
 
+        var selectionVersion = detailLoadVersion;
         try
         {
-            var selectionVersion = detailLoadVersion;
             var preview = await ReadContentPreviewAsync(row.Summary.SourcePath);
             if (selectionVersion == detailLoadVersion
                 && (SessionsList.SelectedItem as SessionRow)?.Summary.Id == row.Summary.Id)
@@ -487,18 +488,32 @@ public partial class MainWindow : System.Windows.Window
         }
         catch (Exception exception)
         {
-            ContentPreview.Text = $"İçerik okunamadı: {exception.Message}";
+            if (selectionVersion == detailLoadVersion
+                && (SessionsList.SelectedItem as SessionRow)?.Summary.Id == row.Summary.Id)
+                ContentPreview.Text = $"İçerik okunamadı: {exception.Message}";
         }
     }
 
     private bool CanPreviewSource(string path)
     {
         if (!File.Exists(path) || Path.GetFileName(path).Equals("auth.json", StringComparison.OrdinalIgnoreCase)) return false;
-        var relative = Path.GetRelativePath(sourcePath, Path.GetFullPath(path));
-        return relative.Length > 0
-               && !Path.IsPathRooted(relative)
-               && !relative.Equals("..", StringComparison.Ordinal)
-               && !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal);
+        var fullPath = Path.GetFullPath(path);
+        var relative = Path.GetRelativePath(sourcePath, fullPath);
+        if (relative.Length == 0 || Path.IsPathRooted(relative)
+            || relative.Equals("..", StringComparison.Ordinal)
+            || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)) return false;
+
+        try
+        {
+            // A lexical child may link outside the selected source or alias auth.json.
+            for (var current = fullPath; current is not null; current = Path.GetDirectoryName(current))
+            {
+                if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) return false;
+            }
+            return true;
+        }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
     }
 
     private static async Task<string> ReadContentPreviewAsync(string path)
@@ -516,7 +531,9 @@ public partial class MainWindow : System.Windows.Window
 
         if (preview.Length == 0) return "Desteklenen konuşma içeriği bulunamadı.";
         var bounded = preview.ToString(0, Math.Min(preview.Length, ContentPreviewLimit));
-        return stream.Position < stream.Length ? bounded + "\n… 64 KiB sınırı" : bounded;
+        return preview.Length >= ContentPreviewLimit
+            ? bounded + "\n… 65.536 karakter sınırı"
+            : bounded;
     }
 
     private static void TryAppendContent(string line, StringBuilder preview)
@@ -524,7 +541,9 @@ public partial class MainWindow : System.Windows.Window
         try
         {
             using var document = JsonDocument.Parse(line);
-            if (!document.RootElement.TryGetProperty("payload", out var payload)) return;
+            if (document.RootElement.ValueKind != JsonValueKind.Object
+                || !document.RootElement.TryGetProperty("payload", out var payload)
+                || payload.ValueKind != JsonValueKind.Object) return;
 
             var role = payload.TryGetProperty("role", out var roleValue)
                 && roleValue.ValueKind == JsonValueKind.String
@@ -559,13 +578,26 @@ public partial class MainWindow : System.Windows.Window
     private static void AppendPreviewText(StringBuilder preview, string? role, string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return;
-        if (!string.IsNullOrWhiteSpace(role)) preview.Append('[').Append(role).AppendLine("]");
-        preview.AppendLine(text);
-        preview.AppendLine();
+        AppendBounded(preview, string.IsNullOrWhiteSpace(role) ? string.Empty : $"[{role}]\n");
+        AppendBounded(preview, text);
+        AppendBounded(preview, "\n\n");
+    }
+
+    private static void AppendBounded(StringBuilder preview, string text)
+    {
+        var remaining = ContentPreviewLimit - preview.Length;
+        if (remaining > 0) preview.Append(text, 0, Math.Min(text.Length, remaining));
     }
 
     internal async Task RunSmokeAsync(string pngPath)
     {
+        var boundedPreview = new StringBuilder();
+        TryAppendContent("[]", boundedPreview);
+        TryAppendContent("{\"payload\":[]}", boundedPreview);
+        AppendPreviewText(boundedPreview, "user", new string('x', ContentPreviewLimit + 1));
+        if (boundedPreview.Length != ContentPreviewLimit)
+            throw new InvalidOperationException("İçerik önizlemesinin karakter sınırı uygulanmadı.");
+
         ConfigureDemoWorkspace();
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
         await ScanAsync();

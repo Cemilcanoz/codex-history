@@ -1,0 +1,16 @@
+name: Feature request
+description: Explain a task Codex History could help you complete.
+title: "[Feature]: "
+body:
+  - type: textarea
+    id: task
+    attributes:
+      label: What are you trying to do?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true

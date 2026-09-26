@@ -1,57 +1,111 @@
-# Codex-History
+<div align="center">
 
-Codex-History, Windows üzerinde Codex oturum geçmişini yerel olarak inceleyen .NET 10 uygulamasıdır. Kaynak günlükleri arşivlemez; oturum, görev, model ve maliyet metadatasını yeniden üretilebilir bir SQLite indeksinde tutar.
+# Codex History
 
-Bağımsız bir topluluk projesidir (unofficial community project); OpenAI'nin resmî ürünü değildir.
+### Your coding sessions, finally in view.
 
-## Durum ve mimari
+A local Windows companion for exploring Codex sessions, token usage and estimated API-equivalent costs.
 
-İlk ürün dilimi .NET 10 + WPF + doğrudan `Microsoft.Data.Sqlite` ile kuruluyor. Çözüm beş küçük projeye ayrılır:
+[![Build & tests](https://github.com/Cemilcanoz/codex-history/actions/workflows/ci.yml/badge.svg)](https://github.com/Cemilcanoz/codex-history/actions/workflows/ci.yml)
+[![Windows](https://img.shields.io/badge/platform-Windows_x64-0078D4)](#get-started)
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-- `CodexHistory.Core`: geçmiş kayıtlarının modelleri ve alan kuralları.
-- `CodexHistory.Infrastructure`: SQLite kalıcılığı ve sorgu erişimi.
-- `CodexHistory.App`: WPF masaüstü arayüzü.
-- `CodexHistory.Cli`: inceleme ve tanılama için komut satırı yüzeyi.
-- `CodexHistory.Tests`: sentetik veriyle regresyon testleri.
+[Download](https://github.com/Cemilcanoz/codex-history/releases/latest) · [Türkçe](README.tr.md) · [Report a bug](https://github.com/Cemilcanoz/codex-history/issues/new?template=bug_report.yml) · [Contribute](CONTRIBUTING.md)
 
-Veri akışı `CLI/WPF → Core → Infrastructure → yerel SQLite` şeklindedir. Ek ORM veya MVVM paketi kullanılmıyor; alternatifler [`docs/decisions.md`](docs/decisions.md) içinde kayıtlıdır.
+</div>
 
-## Visual Studio ile açma
+![Codex History in dark mode, showing synthetic sessions and usage details](docs/images/codex-history-dark.png)
 
-Visual Studio Community 2026'da `CodexHistory.sln` dosyasını açın. Başlangıç projesi olarak `CodexHistory.App` seçildiğinde F5 ile WPF uygulaması çalışır.
+*Real application screenshots with synthetic demo data. The current interface is in Turkish.*
 
-## Komut satırından derleme, test ve çalıştırma
+## Find the work behind the tokens
+
+Codex session logs contain useful history, but reading JSONL files is a poor way to revisit your work. Codex History turns a folder you choose into a searchable, local session index.
+
+- **Revisit a session.** Search titles, workspace paths and models; filter the session list and follow its event timeline.
+- **Understand usage.** See input, cached input, output and reasoning tokens, tool calls and session duration.
+- **Compare estimated costs.** Use a bundled, dated API price snapshot or import your own CSV. Unpriced models stay unknown or partial.
+- **Inspect quota snapshots.** View primary and secondary limit information when it exists in the logs.
+- **Try it without sharing your history.** Start with the built-in synthetic demo before selecting a real source.
+- **Keep the index on your machine.** SQLite stores metadata; message contents and tool arguments are excluded from the index. Opt-in conversation previews stay in memory and are limited to 65,536 characters.
+
+<details>
+<summary>Light mode and compact window</summary>
+
+![Codex History light theme with synthetic demo data](docs/images/codex-history-light.png)
+
+![Codex History in a compact window with synthetic demo data](docs/images/codex-history-compact.png)
+
+</details>
+
+## Get started
+
+**Windows x64 · preview release · no account or API key required**
+
+1. Open [Releases](https://github.com/Cemilcanoz/codex-history/releases/latest) and download the Windows portable ZIP.
+2. Extract the ZIP, then run `CodexHistory.App.exe`. The portable build includes the .NET runtime.
+3. Choose **DEMO** to explore synthetic sessions, or select your Codex home folder and click **TARA** to scan it.
+4. Select a session to see its timeline and usage. Use search and model filters to narrow the list.
+
+Select the parent folder containing `sessions/` and/or `archived_sessions/`. The default is `%USERPROFILE%\.codex`; if you set a custom Codex home, select that folder instead. Selecting `sessions/` itself will not scan its parent. The application does not scan automatically when it opens.
+
+Windows may show a warning for an unsigned download. There is no signed installer or automatic update system yet.
+
+## What the numbers mean
+
+| Display | Meaning |
+|---|---|
+| Tokens | Usage reported by the local logs; incomplete logs can leave incomplete totals. Cached and reasoning tokens are subsets, not additional usage to add again. |
+| Estimated cost | Approximate equivalent using API price entries. **It is not your Codex subscription bill.** |
+| Quota | Historical snapshots present in a session, not a live account balance. |
+| Water scenario | A configurable token-based scenario, **not measured water consumption**. The initial 1 mL / 1,000 tokens is an example assumption. |
+
+The bundled price snapshot is dated **2026-09-22** and does not refresh from the network. A CSV with `model,effective_date,input_per_million,cached_per_million,output_per_million` can override it. See [price catalog details](docs/pricing.md), the [example CSV](samples/prices.example.csv) and [water methodology](docs/water-methodology.md).
+
+## Local by design
+
+The app reads the selected source folder without modifying its logs and keeps a rebuildable index outside the source. It does not use an API key, upload sessions or synchronize with a cloud service. Authentication files such as `auth.json` are excluded.
+
+The index still contains metadata such as workspace paths and model names. Treat the index and your screenshots as personal data. Opt-in content preview is not a redaction tool. The default index is `%LOCALAPPDATA%\CodexHistory\index.db`.
+
+## Build from source
+
+Use Windows and a .NET 10 SDK compatible with [global.json](global.json).
 
 ```powershell
+git clone https://github.com/Cemilcanoz/codex-history.git
+cd codex-history
 dotnet build CodexHistory.sln
 dotnet test CodexHistory.sln
-dotnet run --project src/CodexHistory.Cli -- --help
-dotnet run --project src/CodexHistory.Cli -- --source "C:\path\to\selected-sessions" --db "$env:TEMP\codex-history\index.db"
 dotnet run --project src/CodexHistory.App
 ```
 
-CLI `--source` ile açıkça verilen klasörü tarar ve `--db` ile belirtilen SQLite dosyasını yeniler. UI smoke çalıştırması `./scripts/Run-Demo.ps1` ile yapılır; App kendi sentetik kaynağını kullanır ve `artifacts/demo.png` çıktısını doğrular. Farklı çıktı yolu için `./scripts/Run-Demo.ps1 -ArtifactPath artifacts\demo-script.png` kullanabilirsiniz.
+For the command-line indexer:
 
-## Arayüz kullanımı
+```powershell
+dotnet run --project src/CodexHistory.Cli -- --help
+dotnet run --project src/CodexHistory.Cli -- --source "C:\path\to\codex-home" --db "C:\path\outside-source\index.db"
+```
 
-Önce kaynak klasörü seçilir, ardından tarama başlatılır. Tarama bittiğinde ilk görünür oturum otomatik seçilir; zaman çizelgesi ve günlükte varsa birincil/ikincil kota anlık görüntüleri ayrıntıda gösterilir. Liste; görev başlığı, zaman, model, durum ve tahmini maliyet metadatasını gösterir. Ham prompt, araç çıktısı ve konuşma metni varsayılan olarak gösterilmez.
+Generate synthetic UI screenshots or a self-contained ZIP:
 
-## Fiyat kataloğu ve maliyet sınırı
+```powershell
+./scripts/Run-Demo.ps1
+./scripts/Publish-Portable.ps1 -Version 0.1.1
+```
 
-Uygulama `2026-09-22-current-price-fallback-v2` sürümlü yerel fiyat kataloğunu yeni ve mevcut indekslere idempotent olarak ekler. Katalog; `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.3-codex` ve `gpt-5.2-codex` için 1 milyon token başına input, cached input ve output fiyatlarını içerir. Kaynak, 22 Eylül 2026 tarihinde doğrulanan OpenAI standart API liste fiyatlarıdır. Varsayılan satırlar teknik olarak `1970-01-01` fallback tarihiyle saklanır; amaç desteklenen eski oturumları tarihsel fiyat iddiası kurmadan bugünkü liste fiyatıyla karşılaştırmaktır.
+## Small, inspectable architecture
 
-Gösterilen para değeri gerçek Codex abonelik faturası veya tarihsel fatura değil, güncel standart API liste fiyatıyla yaklaşık karşılıktır. Yalnız eşleşmeyen model kullanımları varsa tutar `kısmi` olarak işaretlenir; hiç model eşleşmesi yoksa `Bilinmiyor` gösterilir. Kullanıcı, başlığı `model,effective_date,input_per_million,cached_per_million,output_per_million` olan bir CSV içe aktarabilir. Fiyat seçimi kullanım tarihinden ileri olmayan en yeni satırı kullandığı için tarihli CSV satırları fallback kataloğunun önüne geçer; aynı model/tarih tekrar içe aktarılırsa önceki değer güncellenir. Örnek dosya [`samples/prices.example.csv`](samples/prices.example.csv) içindedir.
+```text
+WPF app / CLI → Core models → Infrastructure → local SQLite
+                   ↑
+           synthetic regression tests
+```
 
-## Su ayak izi senaryosu
+The solution uses WPF and direct `Microsoft.Data.Sqlite` access, with no extra ORM or UI framework. Read the [architecture decisions](docs/decisions.md) and [contribution guide](CONTRIBUTING.md).
 
-Su alanı ölçülmüş tüketimi değil, seçili filtredeki girdi ve çıktı tokenları üzerinden
-hesaplanan bir senaryoyu gösterir. Katsayı kullanıcı tarafından değiştirilebilir.
-Başlangıçtaki **1 mL / 1.000 token yalnız örnek varsayımdır**; Codex'e ait doğrulanmış
-bir katsayı değildir. Önbellek ve reasoning tokenları toplama ikinci kez eklenmez.
-Formül, belirsizlikler ve araştırma bağlantıları [metodoloji belgesindedir](docs/water-methodology.md).
+## Help shape the next release
 
-## Gizlilik ve sınırlar
+Useful next steps include more log-format fixtures, English UI, signed distribution and clearer comparison views. These are roadmap items, not shipped features. A small reproduction using synthetic data is particularly welcome; please never attach real prompts, access tokens or authentication files to an issue.
 
-Uygulama yalnızca kullanıcının seçip taramayı başlattığı yerel klasörü okur. `auth.json`, kimlik bilgileri ve sırlar hiçbir koşulda okunmaz veya SQLite'a yazılmaz. Demo kayıtları sentetiktir. Bu sürüm çevrimiçi senkronizasyon, bulut depolama, kesin fatura/kota ölçümü ve hassas veri maskeleme sağlamaz. Paketleme/installer kararı çalışan ilk ürün görüldükten sonra verilecektir.
-
-Kararların gerekçeleri için [`docs/decisions.md`](docs/decisions.md) dosyasına bakın.
+Codex History is an **independent community project**, not an official OpenAI product. “Codex” identifies the logs it helps you inspect. Released under the [MIT license](LICENSE).
